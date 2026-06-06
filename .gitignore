@@ -1,0 +1,8 @@
+gpx_files/
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+.venv/
+privacy_zones.json

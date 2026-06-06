@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block title %}GPX Editor — Files{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-4">
+  <h1 class="mb-0">GPX Files</h1>
+  <form method="post" action="{{ url_for('upload') }}" enctype="multipart/form-data" id="uploadForm">
+    <input type="file" name="gpx_file" accept=".gpx" id="gpxFileInput" style="display:none"
+           onchange="document.getElementById('uploadForm').submit()">
+    <button type="button" class="btn btn-amber" onclick="document.getElementById('gpxFileInput').click()">Upload GPX</button>
+  </form>
+</div>
+
+{% if files %}
+<table class="table table-hover align-middle">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>File</th>
+      <th>Author</th>
+      <th>Distance</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for f in files %}
+    <tr style="cursor:pointer" onclick="window.location='{{ url_for('view', filename=f.filename) }}'">
+      <td>{{ f.name }}</td>
+      <td><code>{{ f.filename }}</code></td>
+      <td>{{ f.author }}</td>
+      <td>{{ f.distance_km }} km</td>
+      <td onclick="event.stopPropagation()">
+        <a href="{{ url_for('download', filename=f.filename) }}" class="btn btn-outline-secondary btn-sm">Download</a>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="text-muted">No GPX files yet. Upload one to get started.</p>
+{% endif %}
+{% endblock %}

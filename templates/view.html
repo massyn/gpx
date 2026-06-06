@@ -1,0 +1,648 @@
+{% extends "base.html" %}
+
+{% block title %}{{ name or filename }} — GPX Editor{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  #map { height: 500px; }
+  .suspect-row.active { background: rgba(239,68,68,0.1); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="mb-3">
+  <a href="{{ url_for('index') }}" class="btn btn-outline-secondary btn-sm">&larr; Back</a>
+</div>
+
+<div class="d-flex align-items-baseline gap-3 mb-1">
+  <h1 class="mb-0">{{ name or filename }}</h1>
+  <span class="text-muted" id="trackDistanceDisplay"></span>
+</div>
+{% if description %}<p class="text-muted mb-1">{{ description }}</p>{% endif %}
+{% if author %}<small class="text-muted d-block mb-3">{{ author }}</small>{% endif %}
+
+<div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
+  <button class="btn btn-outline-amber btn-sm" id="smoothBtn">Smooth Track</button>
+  <button class="btn btn-outline-secondary btn-sm" id="undoBtn" disabled>Undo</button>
+  <span class="vr"></span>
+  <button class="btn btn-outline-amber btn-sm" id="addWaypointBtn">+ Add Waypoint</button>
+  <span class="vr"></span>
+  <button class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#metaModal">Edit Metadata</button>
+  <a href="{{ url_for('download', filename=filename) }}" class="btn btn-outline-secondary btn-sm">Download</a>
+  <form method="post" action="{{ url_for('delete', filename=filename) }}" class="d-inline"
+        onsubmit="return confirm('Delete {{ filename }}?')">
+    <button class="btn btn-outline-danger btn-sm">Delete</button>
+  </form>
+  <small class="text-muted ms-1" id="smoothInfo"></small>
+</div>
+
+<div id="map" class="mb-4 rounded border"></div>
+
+<!-- Suspect segments (hidden until detected) -->
+<div id="suspectsCard" class="card mb-4 d-none">
+  <div class="card-header d-flex align-items-center gap-2">
+    <span>Suspect Segments</span>
+    <span class="badge bg-danger" id="suspectCount"></span>
+  </div>
+  <div id="suspectList" class="list-group list-group-flush"></div>
+</div>
+
+<!-- Metadata modal -->
+<div class="modal fade" id="metaModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Edit Metadata</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <form method="post" action="{{ url_for('edit', filename=filename) }}">
+        <div class="modal-body">
+          <div class="mb-3">
+            <label class="form-label" for="fname">Name</label>
+            <input type="text" class="form-control" id="fname" name="name" value="{{ name }}">
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="fdescription">Description</label>
+            <textarea class="form-control" id="fdescription" name="description" rows="3">{{ description }}</textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label" for="fauthor">Author</label>
+            <input type="text" class="form-control" id="fauthor" name="author" value="{{ author }}">
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="submit" class="btn btn-amber">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<!-- Waypoint modal -->
+<div class="modal fade" id="waypointModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="waypointModalLabel">Add Waypoint</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="wpLat">
+        <input type="hidden" id="wpLon">
+        <input type="hidden" id="wpTime">
+        <div class="mb-3">
+          <label class="form-label" for="wpName">Name <span class="text-danger">*</span></label>
+          <input type="text" class="form-control" id="wpName">
+          <div class="invalid-feedback">Name is required.</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="wpSym">Type</label>
+          <select class="form-select" id="wpSym">
+            <option value="">— Select —</option>
+            <option>Fuel</option>
+            <option>Food</option>
+            <option>Coffee</option>
+            <option>Scenic</option>
+            <option>Hazard</option>
+            <option>Accommodation</option>
+            <option>Rest Stop</option>
+            <option>Other</option>
+          </select>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="wpDesc">Description</label>
+          <textarea class="form-control" id="wpDesc" rows="2"></textarea>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="wpCmt">Comment</label>
+          <input type="text" class="form-control" id="wpCmt" placeholder="e.g. Great pies and coffee">
+        </div>
+        <div class="row g-3 mb-3">
+          <div class="col">
+            <label class="form-label" for="wpLink">Link</label>
+            <input type="url" class="form-control" id="wpLink" placeholder="https://...">
+          </div>
+          <div class="col-auto">
+            <label class="form-label" for="wpEle">Elevation (m)</label>
+            <input type="number" class="form-control" id="wpEle" step="0.1" style="width:110px">
+          </div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label" for="wpType">Category</label>
+          <input type="text" class="form-control" id="wpType" placeholder="freeform">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-danger me-auto d-none" id="wpDelete">Delete</button>
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-amber" id="wpSave">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+  // ── State ─────────────────────────────────────────────────
+  const trackpoints = {{ trackpoints | tojson }};
+  let activeTrackpoints = [...trackpoints];
+  let undoTrackpoints = null;
+
+  // ── Map ───────────────────────────────────────────────────
+  const map = L.map('map');
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+  }).addTo(map);
+
+  let trackLine = null;
+
+  function redrawTrack() {
+    if (trackLine) map.removeLayer(trackLine);
+    trackLine = null;
+    const segs = [];
+    let seg = [];
+    for (const pt of activeTrackpoints) {
+      if (pt._break) {
+        if (seg.length > 1) segs.push(L.polyline(seg, { color: '#3b82f6', weight: 3 }));
+        seg = [];
+      } else {
+        seg.push([pt.lat, pt.lon]);
+      }
+    }
+    if (seg.length > 1) segs.push(L.polyline(seg, { color: '#3b82f6', weight: 3 }));
+    if (segs.length > 0) trackLine = L.featureGroup(segs).addTo(map);
+    updateDistanceDisplay();
+  }
+
+  redrawTrack();
+  updateDistanceDisplay();
+  if (trackLine) map.fitBounds(trackLine.getBounds(), { padding: [20, 20] });
+  else map.setView([0, 0], 2);
+
+  // ── Helpers ───────────────────────────────────────────────
+  function haversineM(lat1, lon1, lat2, lon2) {
+    const R = 6371000, r = Math.PI / 180;
+    const dLat = (lat2 - lat1) * r, dLon = (lon2 - lon1) * r;
+    const a = Math.sin(dLat/2)**2 + Math.cos(lat1*r) * Math.cos(lat2*r) * Math.sin(dLon/2)**2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  function haversineKm(lat1, lon1, lat2, lon2) { return haversineM(lat1, lon1, lat2, lon2) / 1000; }
+
+  function updateDistanceDisplay() {
+    let d = 0;
+    for (let i = 0; i < activeTrackpoints.length - 1; i++) {
+      if (activeTrackpoints[i]._break || activeTrackpoints[i+1]._break) continue;
+      d += haversineKm(activeTrackpoints[i].lat, activeTrackpoints[i].lon,
+                       activeTrackpoints[i+1].lat, activeTrackpoints[i+1].lon);
+    }
+    document.getElementById('trackDistanceDisplay').textContent = d > 0 ? `${d.toFixed(1)} km` : '';
+  }
+
+  async function postTrack() {
+    await fetch('{{ url_for("apply_track", filename=filename) }}', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(activeTrackpoints),
+    });
+  }
+
+  // ── Track algorithms ──────────────────────────────────────
+  function perpDist(p, a, b) {
+    const dx = b.lon - a.lon, dy = b.lat - a.lat;
+    if (dx === 0 && dy === 0) return Math.hypot(p.lat - a.lat, p.lon - a.lon);
+    const t = Math.max(0, Math.min(1, ((p.lat - a.lat) * dy + (p.lon - a.lon) * dx) / (dx*dx + dy*dy)));
+    return Math.hypot(p.lat - a.lat - t * dy, p.lon - a.lon - t * dx);
+  }
+
+  function rdpSegment(points, epsilon) {
+    if (points.length <= 2) return [...points];
+    const keep = new Uint8Array(points.length);
+    keep[0] = keep[points.length - 1] = 1;
+    const stack = [[0, points.length - 1]];
+    while (stack.length) {
+      const [s, e] = stack.pop();
+      let maxD = 0, maxI = s;
+      for (let i = s + 1; i < e; i++) {
+        const d = perpDist(points[i], points[s], points[e]);
+        if (d > maxD) { maxD = d; maxI = i; }
+      }
+      if (maxD > epsilon) { keep[maxI] = 1; stack.push([s, maxI], [maxI, e]); }
+    }
+    return points.filter((_, i) => keep[i]);
+  }
+
+  function rdp(points, epsilon) {
+    if (!points.some(p => p._break)) return rdpSegment(points, epsilon);
+    const result = [];
+    let seg = [];
+    for (const pt of points) {
+      if (pt._break) {
+        result.push(...rdpSegment(seg, epsilon), { _break: true });
+        seg = [];
+      } else {
+        seg.push(pt);
+      }
+    }
+    return result.concat(rdpSegment(seg, epsilon));
+  }
+
+  function flattenStops(points, radiusM = 50, minDurSec = 120) {
+    const result = [], candidates = [];
+    let i = 0;
+    while (i < points.length) {
+      if (points[i]._break) { result.push(points[i]); i++; continue; }
+      let j = i + 1;
+      while (j < points.length && !points[j]._break &&
+             haversineM(points[i].lat, points[i].lon, points[j].lat, points[j].lon) <= radiusM) j++;
+      let isStop = false, durSec = 0;
+      if (j - i > 1 && points[i].time && points[j-1].time) {
+        durSec = (new Date(points[j-1].time) - new Date(points[i].time)) / 1000;
+        isStop = durSec >= minDurSec;
+      }
+      if (isStop) {
+        let sLat = 0, sLon = 0, sEle = 0, eCount = 0;
+        for (let k = i; k < j; k++) {
+          sLat += points[k].lat; sLon += points[k].lon;
+          if (points[k].ele != null) { sEle += points[k].ele; eCount++; }
+        }
+        const n = j - i;
+        const c = { lat: sLat/n, lon: sLon/n, ele: eCount > 0 ? sEle/eCount : null, time: points[i].time };
+        result.push(c);
+        candidates.push({ ...c, duration_min: Math.round(durSec / 60) });
+        i = j;
+      } else {
+        result.push(points[i++]);
+      }
+    }
+    return { trackpoints: result, candidates };
+  }
+
+  // ── Track Cleanup ─────────────────────────────────────────
+  async function applyCleanup(pts) {
+    const before = activeTrackpoints.filter(p => !p._break).length;
+    undoTrackpoints = [...activeTrackpoints];
+    activeTrackpoints = pts;
+    redrawTrack();
+    document.getElementById('undoBtn').disabled = false;
+    const after = pts.filter(p => !p._break).length;
+    const pct = before > 0 ? Math.round((1 - after / before) * 100) : 0;
+    document.getElementById('smoothInfo').textContent = `${before.toLocaleString()} → ${after.toLocaleString()} pts (−${pct}%)`;
+    await postTrack();
+  }
+
+  // ── Ghost markers (stop candidates) ──────────────────────
+  let ghostMarkers = [], pendingGhost = null;
+
+  function clearGhostMarkers() {
+    ghostMarkers.forEach(m => map.removeLayer(m));
+    ghostMarkers = [];
+    pendingGhost = null;
+  }
+
+  function renderGhostMarkers(candidates) {
+    clearGhostMarkers();
+    candidates.forEach(c => {
+      const m = L.circleMarker([c.lat, c.lon], {
+        radius: 10, color: '#888', fillColor: '#555', fillOpacity: 0.45, weight: 2, dashArray: '5 4',
+      }).addTo(map);
+      m.bindTooltip(`Stop ~${c.duration_min} min — click to add waypoint`);
+      m.on('click', e => {
+        L.DomEvent.stopPropagation(e);
+        pendingGhost = m;
+        editingIndex = null;
+        fillModal({ lat: c.lat, lon: c.lon, ele: c.ele, time: c.time });
+        document.getElementById('waypointModalLabel').textContent = 'Add Waypoint';
+        document.getElementById('wpDelete').classList.add('d-none');
+        waypointModal.show();
+      });
+      ghostMarkers.push(m);
+    });
+  }
+
+  document.getElementById('waypointModal').addEventListener('hidden.bs.modal', () => { pendingGhost = null; });
+
+  document.getElementById('smoothBtn').addEventListener('click', async () => {
+    const { trackpoints: flattened, candidates } = flattenStops(activeTrackpoints);
+    await applyCleanup(rdp(flattened, 0.0001));
+    renderGhostMarkers(candidates);
+    refreshSuspects();
+  });
+
+  document.getElementById('undoBtn').addEventListener('click', async () => {
+    if (!undoTrackpoints) return;
+    activeTrackpoints = undoTrackpoints;
+    undoTrackpoints = null;
+    clearGhostMarkers();
+    clearSuspectOverlays();
+    redrawTrack();
+    document.getElementById('undoBtn').disabled = true;
+    document.getElementById('smoothInfo').textContent = '';
+    await postTrack();
+    refreshSuspects();
+  });
+
+  // ── Suspect Segments ──────────────────────────────────────
+  let suspects = [];
+  let highlightLine = null, suggestLine = null, currentOsrmPts = null;
+
+  function clearSuspectOverlays() {
+    if (highlightLine) { map.removeLayer(highlightLine); highlightLine = null; }
+    if (suggestLine) { map.removeLayer(suggestLine); suggestLine = null; }
+    currentOsrmPts = null;
+    document.querySelectorAll('.suspect-row').forEach(r => r.classList.remove('active'));
+  }
+
+  function detectSuspects(pts) {
+    const result = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      if (pts[i]._break || pts[i+1]._break) continue;
+      const distKm = haversineKm(pts[i].lat, pts[i].lon, pts[i+1].lat, pts[i+1].lon);
+      if (distKm < 5) continue;
+      let speedKmh = null;
+      if (pts[i].time && pts[i+1].time) {
+        const dtHr = (new Date(pts[i+1].time) - new Date(pts[i].time)) / 3600000;
+        if (dtHr > 0) speedKmh = Math.round(distKm / dtHr);
+      }
+      result.push({ i, distKm: distKm.toFixed(2), speedKmh,
+        time: pts[i].time, latA: pts[i].lat, lonA: pts[i].lon, latB: pts[i+1].lat, lonB: pts[i+1].lon });
+    }
+    return result;
+  }
+
+  function refreshSuspects() {
+    clearSuspectOverlays();
+    suspects = detectSuspects(activeTrackpoints);
+    const card = document.getElementById('suspectsCard');
+    if (!suspects.length) { card.classList.add('d-none'); return; }
+    card.classList.remove('d-none');
+    document.getElementById('suspectCount').textContent = suspects.length;
+    renderSuspectList();
+  }
+
+  function renderSuspectList() {
+    document.getElementById('suspectList').innerHTML = suspects.map((s, idx) => {
+      const speed = s.speedKmh ? ` · ${s.speedKmh.toLocaleString()} km/h` : '';
+      const time = s.time ? ` · ${new Date(s.time).toLocaleTimeString()}` : '';
+      return `<div class="list-group-item suspect-row d-flex align-items-center gap-2 flex-wrap py-2" id="suspect-${idx}">
+        <div class="flex-grow-1 small"><strong>${s.distKm} km</strong>${speed}${time}</div>
+        <span id="suspectActions-${idx}" class="d-flex gap-1">
+          <button class="btn btn-sm btn-outline-amber" onclick="doSuggestFix(${idx})">Suggest Fix</button>
+          <button class="btn btn-sm btn-outline-danger" onclick="doDeleteSegment(${idx})">Delete segment</button>
+        </span>
+      </div>`;
+    }).join('');
+  }
+
+  function panToSuspect(idx) {
+    clearSuspectOverlays();
+    const s = suspects[idx];
+    highlightLine = L.polyline([[s.latA, s.lonA], [s.latB, s.lonB]], { color: '#ef4444', weight: 4 }).addTo(map);
+    map.fitBounds(highlightLine.getBounds(), { padding: [80, 80], maxZoom: 15 });
+    document.getElementById(`suspect-${idx}`)?.classList.add('active');
+  }
+
+  async function doSuggestFix(idx) {
+    panToSuspect(idx);
+    const s = suspects[idx];
+    const actionsEl = document.getElementById(`suspectActions-${idx}`);
+    actionsEl.innerHTML = '<span class="text-muted small px-2">Loading…</span>';
+    try {
+      const url = `https://router.project-osrm.org/route/v1/driving/${s.lonA},${s.latA};${s.lonB},${s.latB}?overview=full&geometries=geojson`;
+      const data = await fetch(url).then(r => r.json());
+      if (data.code !== 'Ok' || !data.routes.length) throw new Error();
+      currentOsrmPts = data.routes[0].geometry.coordinates.map(([lon, lat]) => ({ lat, lon, ele: null, time: null }));
+      if (suggestLine) map.removeLayer(suggestLine);
+      suggestLine = L.polyline(currentOsrmPts.map(p => [p.lat, p.lon]), {
+        color: '#f97316', weight: 3, dashArray: '8 4',
+      }).addTo(map);
+      actionsEl.innerHTML = `
+        <button class="btn btn-sm btn-amber" onclick="doAcceptFix(${idx})">Accept</button>
+        <button class="btn btn-sm btn-outline-secondary" onclick="doRejectFix(${idx})">Reject</button>
+        <button class="btn btn-sm btn-outline-danger" onclick="doDeleteSegment(${idx})">Delete</button>`;
+    } catch {
+      actionsEl.innerHTML = `<span class="text-danger small px-2">No route found</span>
+        <button class="btn btn-sm btn-outline-danger" onclick="doDeleteSegment(${idx})">Delete</button>`;
+    }
+  }
+
+  async function doAcceptFix(idx) {
+    const s = suspects[idx];
+    undoTrackpoints = [...activeTrackpoints];
+    activeTrackpoints = [
+      ...activeTrackpoints.slice(0, s.i),
+      ...currentOsrmPts,
+      ...activeTrackpoints.slice(s.i + 2),
+    ];
+    clearSuspectOverlays();
+    redrawTrack();
+    document.getElementById('undoBtn').disabled = false;
+    document.getElementById('smoothInfo').textContent = 'Segment repaired.';
+    await postTrack();
+    refreshSuspects();
+  }
+
+  function doRejectFix(idx) {
+    if (suggestLine) { map.removeLayer(suggestLine); suggestLine = null; }
+    currentOsrmPts = null;
+    renderSuspectList();
+    panToSuspect(idx);
+  }
+
+  async function doDeleteSegment(idx) {
+    const s = suspects[idx];
+    if (!confirm(`Delete this ${s.distKm} km segment? The track will be split at this point.`)) return;
+    undoTrackpoints = [...activeTrackpoints];
+    activeTrackpoints = [
+      ...activeTrackpoints.slice(0, s.i + 1),
+      { _break: true },
+      ...activeTrackpoints.slice(s.i + 1),
+    ];
+    clearSuspectOverlays();
+    redrawTrack();
+    document.getElementById('undoBtn').disabled = false;
+    document.getElementById('smoothInfo').textContent = 'Segment deleted — track split.';
+    await postTrack();
+    refreshSuspects();
+  }
+
+  // ── Waypoints ─────────────────────────────────────────────
+  let waypoints = {{ waypoints | tojson }};
+  let markers = [], addMode = false, editingIndex = null;
+  const waypointModal = new bootstrap.Modal(document.getElementById('waypointModal'));
+
+  function snapToTrack(lat, lng) {
+    let best = null, minD = Infinity;
+    for (const pt of activeTrackpoints) {
+      if (pt._break) continue;
+      const d = (pt.lat - lat) ** 2 + (pt.lon - lng) ** 2;
+      if (d < minD) { minD = d; best = pt; }
+    }
+    return best;
+  }
+
+  function renderWaypoints() {
+    markers.forEach(m => map.removeLayer(m));
+    markers = [];
+    waypoints.forEach((wp, i) => {
+      const m = L.marker([wp.lat, wp.lon]).addTo(map);
+      m.bindTooltip(wp.name || 'Waypoint');
+      m.on('click', e => { L.DomEvent.stopPropagation(e); openEditModal(i); });
+      markers.push(m);
+    });
+  }
+
+  function fillModal(wp) {
+    document.getElementById('wpName').value = wp.name ?? '';
+    document.getElementById('wpDesc').value = wp.desc ?? '';
+    document.getElementById('wpCmt').value = wp.cmt ?? '';
+    document.getElementById('wpLink').value = wp.link ?? '';
+    document.getElementById('wpEle').value = wp.ele ?? '';
+    document.getElementById('wpTime').value = wp.time ?? '';
+    document.getElementById('wpSym').value = wp.sym ?? '';
+    document.getElementById('wpType').value = wp.type ?? '';
+    document.getElementById('wpLat').value = wp.lat;
+    document.getElementById('wpLon').value = wp.lon;
+    document.getElementById('wpName').classList.remove('is-invalid');
+  }
+
+  function openAddModal(pt) {
+    editingIndex = null;
+    fillModal({ lat: pt.lat, lon: pt.lon, ele: pt.ele, time: pt.time });
+    document.getElementById('waypointModalLabel').textContent = 'Add Waypoint';
+    document.getElementById('wpDelete').classList.add('d-none');
+    waypointModal.show();
+  }
+
+  function openEditModal(i) {
+    editingIndex = i;
+    fillModal(waypoints[i]);
+    document.getElementById('waypointModalLabel').textContent = 'Edit Waypoint';
+    document.getElementById('wpDelete').classList.remove('d-none');
+    waypointModal.show();
+  }
+
+  function readModal() {
+    return {
+      name: document.getElementById('wpName').value.trim(),
+      desc: document.getElementById('wpDesc').value.trim(),
+      cmt: document.getElementById('wpCmt').value.trim(),
+      link: document.getElementById('wpLink').value.trim(),
+      ele: parseFloat(document.getElementById('wpEle').value) || null,
+      time: document.getElementById('wpTime').value || null,
+      sym: document.getElementById('wpSym').value,
+      type: document.getElementById('wpType').value.trim(),
+      lat: parseFloat(document.getElementById('wpLat').value),
+      lon: parseFloat(document.getElementById('wpLon').value),
+    };
+  }
+
+  function saveWaypoints() {
+    return fetch('{{ url_for("save_waypoints", filename=filename) }}', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(waypoints),
+    });
+  }
+
+  document.getElementById('addWaypointBtn').addEventListener('click', () => {
+    addMode = !addMode;
+    document.getElementById('addWaypointBtn').classList.toggle('active', addMode);
+    map.getContainer().style.cursor = addMode ? 'crosshair' : '';
+  });
+
+  map.on('click', e => {
+    if (!addMode) return;
+    const pt = snapToTrack(e.latlng.lat, e.latlng.lng);
+    if (!pt) return;
+    addMode = false;
+    document.getElementById('addWaypointBtn').classList.remove('active');
+    map.getContainer().style.cursor = '';
+    openAddModal(pt);
+  });
+
+  document.getElementById('wpSave').addEventListener('click', () => {
+    const wp = readModal();
+    if (!wp.name) { document.getElementById('wpName').classList.add('is-invalid'); return; }
+    if (editingIndex === null) {
+      waypoints.push(wp);
+      if (pendingGhost) {
+        map.removeLayer(pendingGhost);
+        ghostMarkers = ghostMarkers.filter(m => m !== pendingGhost);
+        pendingGhost = null;
+      }
+    } else {
+      waypoints[editingIndex] = wp;
+    }
+    saveWaypoints().then(() => { renderWaypoints(); waypointModal.hide(); });
+  });
+
+  document.getElementById('wpDelete').addEventListener('click', () => {
+    if (editingIndex === null) return;
+    waypoints.splice(editingIndex, 1);
+    saveWaypoints().then(() => { renderWaypoints(); waypointModal.hide(); });
+  });
+
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && addMode) {
+      addMode = false;
+      document.getElementById('addWaypointBtn').classList.remove('active');
+      map.getContainer().style.cursor = '';
+    }
+  });
+
+  renderWaypoints();
+
+  // ── Privacy zones ─────────────────────────────────────────
+  function renderZoneCircles(zones) {
+    zones.forEach(z => {
+      L.circle([z.lat, z.lon], {
+        radius: z.radius_km * 1000,
+        color: '#ff69b4', fillColor: '#ff69b4', fillOpacity: 0.15, weight: 2,
+      }).addTo(map).bindTooltip(z.name);
+    });
+  }
+
+  async function initAutoStrip() {
+    let zones;
+    try { zones = await fetch('/api/privacy-zones').then(r => r.json()); }
+    catch { return; }
+
+    renderZoneCircles(zones);
+    if (!zones.length) { refreshSuspects(); return; }
+
+    function inZone(lat, lon) {
+      return zones.some(z => haversineKm(lat, lon, z.lat, z.lon) <= z.radius_km);
+    }
+
+    const cleanTrack = activeTrackpoints.filter(p => p._break || !inZone(p.lat, p.lon));
+    const cleanWaypoints = waypoints.filter(w => !inZone(w.lat, w.lon));
+    const trackRemoved = activeTrackpoints.filter(p => !p._break).length - cleanTrack.filter(p => !p._break).length;
+    const wpRemoved = waypoints.length - cleanWaypoints.length;
+
+    if (trackRemoved === 0 && wpRemoved === 0) { refreshSuspects(); return; }
+
+    undoTrackpoints = [...activeTrackpoints];
+    activeTrackpoints = cleanTrack;
+    waypoints = cleanWaypoints;
+    redrawTrack();
+    renderWaypoints();
+    document.getElementById('undoBtn').disabled = false;
+    document.getElementById('smoothInfo').textContent = `Privacy zones: removed ${trackRemoved + wpRemoved} pt(s)`;
+
+    await Promise.all([
+      trackRemoved > 0 && postTrack(),
+      wpRemoved > 0 && fetch('{{ url_for("save_waypoints", filename=filename) }}', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(waypoints),
+      }),
+    ].filter(Boolean));
+
+    refreshSuspects();
+  }
+
+  initAutoStrip();
+</script>
+{% endblock %}
