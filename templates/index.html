@@ -2,6 +2,15 @@
 
 {% block title %}GPX Editor — Files{% endblock %}
 
+{% block head %}
+<style>
+  th.sortable { cursor: pointer; user-select: none; white-space: nowrap; }
+  th.sortable::after { content: " \2195"; opacity: .3; }
+  th.sortable.asc::after { content: " \2191"; opacity: 1; }
+  th.sortable.desc::after { content: " \2193"; opacity: 1; }
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex align-items-center justify-content-between mb-4">
   <h1 class="mb-0">GPX Files</h1>
@@ -13,23 +22,31 @@
 </div>
 
 {% if files %}
-<table class="table table-hover align-middle">
+<div class="d-flex align-items-center gap-3 mb-3">
+  <input type="search" class="form-control" id="fileFilter" placeholder="Filter by name, file, author or date…" autocomplete="off" style="max-width:420px">
+  <small class="text-muted" id="filterCount"></small>
+</div>
+<table class="table table-hover align-middle" id="fileTable">
   <thead>
     <tr>
-      <th>Name</th>
-      <th>File</th>
-      <th>Author</th>
-      <th>Distance</th>
+      <th class="sortable" data-type="date">Date</th>
+      <th class="sortable" data-type="text">Name</th>
+      <th class="sortable" data-type="text">File</th>
+      <th class="sortable" data-type="text">Author</th>
+      <th class="sortable text-end" data-type="number">Distance</th>
+      <th class="sortable text-end" data-type="number">Points</th>
       <th></th>
     </tr>
   </thead>
   <tbody>
     {% for f in files %}
     <tr style="cursor:pointer" onclick="window.location='{{ url_for('view', filename=f.filename) }}'">
+      <td class="text-nowrap">{{ f.date or '—' }}</td>
       <td>{{ f.name }}</td>
       <td><code>{{ f.filename }}</code></td>
       <td>{{ f.author }}</td>
-      <td>{{ f.distance_km }} km</td>
+      <td class="text-end text-nowrap" data-value="{{ f.distance_km }}">{{ f.distance_km }} km</td>
+      <td class="text-end" data-value="{{ f.point_count }}">{{ '{:,}'.format(f.point_count) }}</td>
       <td onclick="event.stopPropagation()">
         <a href="{{ url_for('download', filename=f.filename) }}" class="btn btn-outline-secondary btn-sm">Download</a>
       </td>
@@ -37,7 +54,76 @@
     {% endfor %}
   </tbody>
 </table>
+<p class="text-muted d-none" id="noMatches">No files match the filter.</p>
 {% else %}
 <p class="text-muted">No GPX files yet. Upload one to get started.</p>
 {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function () {
+  const table = document.getElementById('fileTable');
+  if (!table) return;
+  const tbody = table.tBodies[0];
+  const rows = [...tbody.rows];
+  const headers = [...table.querySelectorAll('th.sortable')];
+
+  // ── Sorting ───────────────────────────────────────────────
+  function cellValue(row, col, type) {
+    const cell = row.cells[col];
+    const raw = cell.dataset.value ?? cell.textContent.trim();
+    if (type === 'number') return parseFloat(raw) || 0;
+    return raw === '—' ? '' : raw.toLowerCase();
+  }
+
+  function sortBy(th, dir) {
+    const col = th.cellIndex, type = th.dataset.type;
+    headers.forEach(h => h.classList.remove('asc', 'desc'));
+    th.classList.add(dir);
+    const sign = dir === 'asc' ? 1 : -1;
+    rows.sort((a, b) => {
+      const va = cellValue(a, col, type), vb = cellValue(b, col, type);
+      // Rows with no value always sink to the bottom.
+      if (va === '' && vb !== '') return 1;
+      if (vb === '' && va !== '') return -1;
+      return va < vb ? -sign : va > vb ? sign : 0;
+    });
+    rows.forEach(r => tbody.appendChild(r));
+  }
+
+  headers.forEach(th => {
+    th.addEventListener('click', () => {
+      // Dates and distances read most naturally newest/longest first.
+      const firstDir = th.dataset.type === 'text' ? 'asc' : 'desc';
+      const dir = th.classList.contains(firstDir) ? (firstDir === 'asc' ? 'desc' : 'asc') : firstDir;
+      sortBy(th, dir);
+    });
+  });
+
+  // Default view: newest first.
+  sortBy(headers.find(h => h.dataset.type === 'date'), 'desc');
+
+  // ── Filtering ─────────────────────────────────────────────
+  const filter = document.getElementById('fileFilter');
+  const count = document.getElementById('filterCount');
+  const noMatches = document.getElementById('noMatches');
+
+  function applyFilter() {
+    const terms = filter.value.toLowerCase().split(/\s+/).filter(Boolean);
+    let shown = 0;
+    rows.forEach(r => {
+      const text = [...r.cells].slice(0, 4).map(c => c.textContent).join(' ').toLowerCase();
+      const match = terms.every(t => text.includes(t));
+      r.classList.toggle('d-none', !match);
+      if (match) shown++;
+    });
+    count.textContent = terms.length ? `${shown} of ${rows.length} files` : `${rows.length} files`;
+    noMatches.classList.toggle('d-none', shown > 0);
+  }
+
+  filter.addEventListener('input', applyFilter);
+  applyFilter();
+})();
+</script>
 {% endblock %}

@@ -3,30 +3,48 @@
 {% block title %}Privacy Zones — GPX Editor{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha384-sHL9NAb7lN7rfvG5lfHpm643Xkcjzp4jFvuavGOndn6pjVqS6ny56CAt3nsEVT4H" crossorigin="anonymous">
 <style>
-  #map { height: 520px; }
+  #map { height: 520px; border-radius: 8px; }
+  .zone-card {
+    background: rgba(255, 255, 255, .03);
+    border: 1px solid rgba(255, 255, 255, .08);
+    border-radius: 6px;
+    padding: .6rem .8rem;
+    margin-bottom: .5rem;
+  }
+  .zone-form {
+    border: 1px solid rgba(255, 255, 255, .12);
+    border-radius: 8px;
+    background: rgba(255, 255, 255, .03);
+  }
 </style>
 {% endblock %}
 
 {% block content %}
-<h1 class="mb-4">Privacy Zones</h1>
+<a href="{{ url_for('index') }}" class="text-secondary text-decoration-none small">&larr; All files</a>
+<h1 class="mt-1 mb-2">Privacy Zones</h1>
+<p class="text-muted mb-4">
+  A privacy zone covers a sensitive place, such as your home, that you don't want to give away when you share a track.
+  When you open a GPX file, any zone the track or its waypoints pass through is listed under <strong>Clean up</strong>,
+  where you can strip those points from the file. Nothing is removed until you choose to.
+</p>
 
 <div class="row g-4">
   <div class="col-md-4">
-
     <div id="zoneList" class="mb-3"></div>
 
-    <div class="card">
-      <div class="card-header" id="formTitle">Add Zone</div>
-      <div class="card-body">
+    <div class="zone-form">
+      <div class="px-3 pt-3 pb-1 fw-semibold" id="formTitle">Add Zone</div>
+      <div class="p-3">
         <div class="mb-3">
-          <label class="form-label" for="zoneName">Name</label>
+          <label class="form-label small" for="zoneName">Name</label>
           <input type="text" class="form-control form-control-sm" id="zoneName" placeholder="e.g. Home">
           <div class="invalid-feedback">Name is required.</div>
         </div>
         <div class="mb-3">
-          <label class="form-label" for="zoneRadius">Radius (km)</label>
+          <label class="form-label small" for="zoneRadius">Radius (km)</label>
           <input type="number" class="form-control form-control-sm" id="zoneRadius" step="0.1" min="0.1" value="0.5">
         </div>
         <p class="text-muted small mb-2" id="clickHint">Click on the map to set the centre.</p>
@@ -37,28 +55,27 @@
         </div>
       </div>
     </div>
-
   </div>
+
   <div class="col-md-8">
-    <div id="map" class="rounded border"></div>
+    <div id="map"></div>
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH" crossorigin="anonymous"></script>
 <script>
+(function () {
+  const API = {{ url_for('api_get_zones') | tojson }};
+  const COLOUR = '#ff69b4';
+
   const map = L.map('map').setView([0, 0], 2);
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom: 19,
   }).addTo(map);
-
-  // Try to centre on user's location if no zones exist yet
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(pos => {
-      if (!zones.length) map.setView([pos.coords.latitude, pos.coords.longitude], 13);
-    }, () => {});
-  }
 
   let zones = [];
   let circles = [];
@@ -66,13 +83,40 @@
   let selectedId = null;
   let pendingLat = null, pendingLon = null;
 
+  // Centre on the user's location if there are no zones to show yet.
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(pos => {
+      if (!zones.length) map.setView([pos.coords.latitude, pos.coords.longitude], 11);
+    }, () => {});
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  async function send(url, method, body) {
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body });
+    if (!res.ok) {
+      const detail = await res.json().then(j => j.error).catch(() => `HTTP ${res.status}`);
+      alert(`Could not save the zone: ${detail}`);
+    }
+    return res.ok;
+  }
+
   async function loadZones() {
-    zones = await fetch('/api/privacy-zones').then(r => r.json());
+    zones = await fetch(API).then(r => r.json());
     renderList();
     renderCircles();
     if (zones.length) {
-      const lats = zones.map(z => z.lat), lons = zones.map(z => z.lon);
-      map.fitBounds([[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]], { padding: [40, 40] });
+      // Fit each zone's whole circle, not just its centre.
+      const lats = [], lons = [];
+      zones.forEach(z => {
+        const dLat = z.radius_km / 111;
+        const dLon = z.radius_km / (111 * Math.cos(z.lat * Math.PI / 180));
+        lats.push(z.lat - dLat, z.lat + dLat);
+        lons.push(z.lon - dLon, z.lon + dLon);
+      });
+      map.fitBounds([[Math.min(...lats), Math.min(...lons)], [Math.max(...lats), Math.max(...lons)]], { padding: [60, 60] });
     }
   }
 
@@ -80,30 +124,29 @@
     const el = document.getElementById('zoneList');
     if (!zones.length) { el.innerHTML = '<p class="text-muted small">No zones defined yet.</p>'; return; }
     el.innerHTML = zones.map(z => `
-      <div class="d-flex justify-content-between align-items-start mb-2 p-2 rounded" style="background:#1e1e1e">
+      <div class="zone-card d-flex justify-content-between align-items-start">
         <div>
-          <div>${esc(z.name)}</div>
+          <div class="fw-semibold">${esc(z.name)}</div>
           <small class="text-muted">${z.radius_km} km radius</small>
         </div>
         <div class="d-flex gap-1 ms-2">
-          <button class="btn btn-outline-secondary btn-sm" onclick="startEdit('${z.id}')">Edit</button>
-          <button class="btn btn-outline-danger btn-sm" onclick="removeZone('${z.id}')">Del</button>
+          <button class="btn btn-outline-secondary btn-sm" data-edit="${esc(z.id)}">Edit</button>
+          <button class="btn btn-outline-danger btn-sm" data-delete="${esc(z.id)}">Delete</button>
         </div>
       </div>`).join('');
   }
 
+  document.getElementById('zoneList').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (b?.dataset.edit) startEdit(b.dataset.edit);
+    else if (b?.dataset.delete) removeZone(b.dataset.delete);
+  });
+
   function renderCircles() {
     circles.forEach(c => map.removeLayer(c));
-    circles = [];
-    zones.forEach(z => {
-      const c = L.circle([z.lat, z.lon], {
-        radius: z.radius_km * 1000,
-        color: '#ff69b4', fillColor: '#ff69b4', fillOpacity: 0.15, weight: 2,
-      }).addTo(map);
-      c.bindTooltip(z.name);
-      c.on('click', () => startEdit(z.id));
-      circles.push(c);
-    });
+    circles = zones.map(z => L.circle([z.lat, z.lon], {
+      radius: z.radius_km * 1000, color: COLOUR, fillColor: COLOUR, fillOpacity: 0.15, weight: 2,
+    }).addTo(map).bindTooltip(esc(z.name)).on('click', () => startEdit(z.id)));
   }
 
   function updatePreview() {
@@ -112,80 +155,82 @@
     if (pendingLat == null) return;
     const r = parseFloat(document.getElementById('zoneRadius').value) || 0.5;
     previewCircle = L.circle([pendingLat, pendingLon], {
-      radius: r * 1000,
-      color: '#ff69b4', fillColor: '#ff69b4', fillOpacity: 0.3, weight: 2,
-      dashArray: '6 4',
+      radius: r * 1000, color: COLOUR, fillColor: COLOUR, fillOpacity: 0.3, weight: 2, dashArray: '6 4',
     }).addTo(map);
+  }
+
+  function showCoords(lat, lon) {
+    document.getElementById('clickHint').classList.add('d-none');
+    const ct = document.getElementById('coordsText');
+    ct.classList.remove('d-none');
+    ct.textContent = `${lat.toFixed(5)}, ${lon.toFixed(5)}`;
   }
 
   map.on('click', e => {
     pendingLat = e.latlng.lat;
     pendingLon = e.latlng.lng;
-    document.getElementById('clickHint').classList.add('d-none');
-    document.getElementById('coordsText').classList.remove('d-none');
-    document.getElementById('coordsText').textContent = `${pendingLat.toFixed(5)}, ${pendingLon.toFixed(5)}`;
+    showCoords(pendingLat, pendingLon);
     updatePreview();
   });
 
   document.getElementById('zoneRadius').addEventListener('input', updatePreview);
 
   document.getElementById('saveZoneBtn').addEventListener('click', async () => {
-    const name = document.getElementById('zoneName').value.trim();
+    const nameEl = document.getElementById('zoneName');
+    const name = nameEl.value.trim();
     const radius_km = parseFloat(document.getElementById('zoneRadius').value);
-    if (!name) { document.getElementById('zoneName').classList.add('is-invalid'); return; }
+    if (!name) { nameEl.classList.add('is-invalid'); return; }
+    nameEl.classList.remove('is-invalid');
     if (pendingLat == null) { alert('Click the map to set a location first.'); return; }
-    document.getElementById('zoneName').classList.remove('is-invalid');
 
     const body = JSON.stringify({ name, lat: pendingLat, lon: pendingLon, radius_km });
-    if (selectedId) {
-      await fetch(`/api/privacy-zones/${selectedId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body });
-    } else {
-      await fetch('/api/privacy-zones', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
-    }
+    const saved = selectedId
+      ? await send(`${API}/${encodeURIComponent(selectedId)}`, 'PUT', body)
+      : await send(API, 'POST', body);
+    if (!saved) return;
     resetForm();
     await loadZones();
   });
 
   function startEdit(id) {
     const z = zones.find(z => z.id === id);
+    if (!z) return;
     selectedId = id;
-    pendingLat = z.lat; pendingLon = z.lon;
+    pendingLat = z.lat;
+    pendingLon = z.lon;
     document.getElementById('zoneName').value = z.name;
     document.getElementById('zoneRadius').value = z.radius_km;
     document.getElementById('formTitle').textContent = 'Edit Zone';
     document.getElementById('cancelBtn').classList.remove('d-none');
-    document.getElementById('clickHint').classList.add('d-none');
-    document.getElementById('coordsText').classList.remove('d-none');
-    document.getElementById('coordsText').textContent = `${z.lat.toFixed(5)}, ${z.lon.toFixed(5)}`;
+    showCoords(z.lat, z.lon);
     updatePreview();
     map.panTo([z.lat, z.lon]);
   }
 
   async function removeZone(id) {
     if (!confirm('Delete this zone?')) return;
-    await fetch(`/api/privacy-zones/${id}`, { method: 'DELETE' });
+    if (!(await send(`${API}/${encodeURIComponent(id)}`, 'DELETE'))) return;
     if (selectedId === id) resetForm();
     await loadZones();
   }
 
   function resetForm() {
-    selectedId = null; pendingLat = null; pendingLon = null;
+    selectedId = null;
+    pendingLat = null;
+    pendingLon = null;
     document.getElementById('zoneName').value = '';
+    document.getElementById('zoneName').classList.remove('is-invalid');
     document.getElementById('zoneRadius').value = '0.5';
     document.getElementById('formTitle').textContent = 'Add Zone';
     document.getElementById('cancelBtn').classList.add('d-none');
     document.getElementById('clickHint').classList.remove('d-none');
     document.getElementById('coordsText').classList.add('d-none');
-    document.getElementById('zoneName').classList.remove('is-invalid');
     if (previewCircle) { map.removeLayer(previewCircle); previewCircle = null; }
   }
 
   document.getElementById('cancelBtn').addEventListener('click', resetForm);
 
-  function esc(s) {
-    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  }
-
   loadZones();
+})();
 </script>
 {% endblock %}
